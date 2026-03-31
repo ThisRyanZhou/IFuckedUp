@@ -1,3 +1,9 @@
+#include "floatx.h"
+#include <assert.h>
+#include <limits.h>
+#include <math.h>
+#include "bitFields.h"
+
 floatx doubleToFloatx(double val,int totBits,int expBits) {
 
     assert(totBits >= 3 && totBits <= 64);
@@ -48,20 +54,16 @@ floatx doubleToFloatx(double val,int totBits,int expBits) {
         unbiasedExp = 1 - doubleBias;
     } else {
         unbiasedExp = exp - doubleBias;
-
-        // ✅ FIX #1: ensure implicit 1 is added ONLY for normal numbers
-        frac |= (1UL << 52);
+        frac |= (1UL << 52);  // implicit 1
     }
 
     int fxExp = unbiasedExp + floatxBias;
-
     int maxExp = (1 << expBits) - 1;
 
     // -----------------------------
-    // ✅ FIX #2: Correct overflow handling
+    // Overflow → infinity
     // -----------------------------
     if (fxExp > maxExp - 1) {
-        // overflow → infinity
         return (sign << (totBits - 1)) |
                ((unsigned long)maxExp << fracBits);
     }
