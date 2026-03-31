@@ -1,33 +1,117 @@
 #include "floatx.h"
 #include <assert.h>
-#include <limits.h> // for CHAR_BIT - number of bits per byte
-#include <math.h> // for isinf and isnan
+#include <limits.h>
+#include <math.h>
 #include "bitFields.h"
 
 floatx doubleToFloatx(double val,int totBits,int expBits) {
 
-/*-----------------------------------------------------------------------------------------------
-	From the README: 	At a high level, doing the conversion requires several manipulations:
-	1. Extracting the sign bit from the double value, and inserting it into the floatx value at
-		the correct position.
-	2. Extract the biased exponent from the double value.
-			Check to see if the double value is sub-normal.
-			Check to make sure the floatx exponent won't overflow or underflow.
-			                If so, handle as a special case.
-			If not, rebias the exponent using the floatx bias (which depends on the number of exponent bits)
-			and write the result to the correct location in the floatx result.
-	3. Extract the fraction bits from the double value.
-			Determine how many bits are available for the fraction in the floatx value,
-			and truncate or extend the original value,
-			and write the resulting bits to the floatx result.
-	4. Handle special cases, such as infinity, or not-a-number.
-	5. Handle the cases where the floatx value is subnormal.
-	                Adjust the fraction bits as needed.
-	6. Return the floatx result.
-----------------------------------------------------------------------------------------------------*/
+    // -----------------------------
+    // 0. Validate inputs
+    // -----------------------------
+    assert(totBits >= 3 && totBits <= 64);
+    assert(expBits >= 1 && expBits <= totBits - 2);
 
-	// First, make some assertions to ensure the totBits and expBits parameters are OK
-	// Then, implement the algorithm
+    int fracBits = totBits - expBits - 1;
 
-	return 0; // Remove this when you are done.
+    int doubleBias = 1023;
+    int floatxBias = (1 << (expBits - 1)) - 1;
+
+    // -----------------------------
+    // 1. Extract double fields
+    // -----------------------------
+    union {
+        double d;
+        unsigned long u;
+    } conv;
+
+    conv.d = val;
+
+    unsigned long sign = (conv.u >> 63) & 1;
+    unsigned long exp  = (conv.u >> 52) & 0x7FF;
+    unsigned long frac = conv.u & 0xFFFFFFFFFFFFF;
+
+    // -----------------------------
+    // 2. Handle special cases
+    // -----------------------------
+
+    // Zero
+    if (exp == 0 && frac == 0) {
+        return sign << (totBits - 1);
+    }
+
+    // Inf / NaN
+    if (exp == 0x7FF) {
+        unsigned long fxExp = (1UL << expBits) - 1;
+        unsigned long fxFrac = (frac == 0) ? 0 : 1;
+
+        return (sign << (totBits - 1)) |
+               (fxExp << fracBits) |
+               fxFrac;
+    }
+
+    // -----------------------------
+    // 3. Normalize exponent
+    // -----------------------------
+    int unbiasedExp;
+
+    if (exp == 0) {
+        // double subnormal
+        unbiasedExp = 1 - doubleBias;
+    } else {
+        unbiasedExp = exp - doubleBias;
+        frac |= (1UL << 52);  // restore implicit 1
+    }
+
+    int fxExp = unbiasedExp + floatxBias;
+
+    // -----------------------------
+    // 4. Handle overflow
+    // -----------------------------
+    if (fxExp >= (1 << expBits) - 1) {
+        unsigned long fxExpAll1 = (1UL << expBits) - 1;
+        return (sign << (totBits - 1)) |
+               (fxExpAll1 << fracBits);
+    }
+
+    // -----------------------------
+    // 5. Handle underflow → subnormal
+    // -----------------------------
+    if (fxExp <= 0) {
+
+        int shift = 1 - fxExp;
+
+        // too small → zero
+        if (shift > 53) {
+            return sign << (totBits - 1);
+        }
+
+        // shift mantissa
+        frac >>= shift;
+
+        unsigned long fxFrac;
+
+        if (52 >= fracBits) {
+            fxFrac = frac >> (52 - fracBits);
+        } else {
+            fxFrac = frac << (fracBits - 52);
+        }
+
+        return (sign << (totBits - 1)) | fxFrac;
+    }
+
+    // -----------------------------
+    // 6. Normal case
+    // -----------------------------
+    unsigned long fxFrac;
+
+    if (52 >= fracBits) {
+        fxFrac = frac >> (52 - fracBits);
+    } else {
+        fxFrac = frac << (fracBits - 52);
+    }
+
+    return (sign << (totBits - 1)) |
+           ((unsigned long)fxExp << fracBits) |
+           fxFrac;
 }
