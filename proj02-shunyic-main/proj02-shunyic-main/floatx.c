@@ -1,61 +1,64 @@
 #include "floatx.h"
 #include "bitFields.h"
 #include <math.h>
+#include <limits.h>
 #include <assert.h>
-#include <stdint.h>
 
 floatx doubleToFloatx(double val, int totBits, int expBits) {
     assert(totBits >= 3 && totBits <= 64);
     assert(expBits >= 1 && expBits <= totBits - 2);
 
-    int fracBits = totBits - 1 - expBits;
     unsigned long result = 0;
 
-    // Handle sign
-    if (signbit(val)) {
-        setBit(totBits - 1, 1, &result);
+    // --- Step 1: Sign bit ---
+    if (val < 0) {
+        setBitFld(totBits - 1, 1, 1, &result); // MSB is sign
         val = -val;
     }
 
-    // Handle special cases
-    if (isnan(val)) {
-        setBitFld(fracBits, expBits, (1UL << expBits) - 1, &result); // exponent all 1s
-        setBitFld(0, fracBits, 1, &result);                           // fraction nonzero
-        return result;
-    }
+    // --- Step 2: Handle special cases: 0, Inf, NaN ---
+    if (val == 0.0) return result; // all bits already 0
+
     if (isinf(val)) {
-        setBitFld(fracBits, expBits, (1UL << expBits) - 1, &result); // exponent all 1s
-        setBitFld(0, fracBits, 0, &result);                           // fraction zero
+        // exponent all 1s, fraction 0
+        setBitFld(totBits - 2, expBits, (1UL << expBits) - 1, &result);
+        setBitFld(0, totBits - 1 - expBits, 0, &result);
         return result;
     }
-    if (val == 0.0) return 0;
 
-    // Normalized value
-    int dblExp;
-    double frac = frexp(val, &dblExp); // val = frac * 2^dblExp, 0.5 <= frac < 1
-    int biasFx = (1 << (expBits - 1)) - 1;
-    long fxExp = dblExp - 1 + biasFx;
+    if (isnan(val)) {
+        // exponent all 1s, fraction != 0
+        setBitFld(totBits - 2, expBits, (1UL << expBits) - 1, &result);
+        setBitFld(0, totBits - 1 - expBits, 1, &result); // simple NaN
+        return result;
+    }
 
-    if (fxExp >= (1 << expBits) - 1) {
-        // Overflow -> infinity
-        setBitFld(fracBits, expBits, (1UL << expBits) - 1, &result);
+    // --- Step 3: Convert double to floatx ---
+    int fracBits = totBits - 1 - expBits;
+    int doubleExp;
+    double frac = frexp(val, &doubleExp); // val = frac * 2^doubleExp, 0.5 <= frac < 1
+
+    // --- Step 4: Re-bias exponent ---
+    int biasFloatx = (1 << (expBits - 1)) - 1;
+    int expFloatx = doubleExp - 1 + biasFloatx; // frexp returns 0.5 <= frac < 1
+
+    if (expFloatx >= (1 << expBits) - 1) { // overflow → Inf
+        setBitFld(totBits - 2, expBits, (1UL << expBits) - 1, &result);
         setBitFld(0, fracBits, 0, &result);
         return result;
-    } else if (fxExp <= 0) {
-        // Subnormal
-        frac = ldexp(frac, fxExp); // shift into fraction
-        unsigned long fracVal = (unsigned long)(frac * (1UL << fracBits));
-        if (fracVal > (1UL << fracBits) - 1) fracVal = (1UL << fracBits) - 1;
-        setBitFld(0, fracBits, fracVal, &result);
-        setBitFld(fracBits, expBits, 0, &result);
-        return result;
+    } else if (expFloatx <= 0) {
+        // subnormal: shift fraction
+        frac = ldexp(frac, expFloatx - 1); // scale fraction
+        expFloatx = 0;
     }
 
-    // Normal floatx
-    unsigned long fracVal = (unsigned long)((frac - 0.5) * 2 * (1UL << fracBits));
-    if (fracVal > (1UL << fracBits) - 1) fracVal = (1UL << fracBits) - 1;
-    setBitFld(0, fracBits, fracVal, &result);
-    setBitFld(fracBits, expBits, fxExp, &result);
+    // --- Step 5: Fraction bits ---
+    unsigned long fracBitsVal = (unsigned long)(frac * (1UL << fracBits));
+    if (fracBitsVal >= (1UL << fracBits)) fracBitsVal = (1UL << fracBits) - 1; // clamp
+
+    // --- Step 6: Set exponent and fraction ---
+    setBitFld(totBits - 2, expBits, expFloatx, &result);
+    setBitFld(0, fracBits, fracBitsVal, &result);
 
     return result;
 }
