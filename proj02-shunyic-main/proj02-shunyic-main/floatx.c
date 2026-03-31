@@ -1,68 +1,89 @@
 #include "floatx.h"
-#include "bitFields.h"
-#include <math.h>
-#include <assert.h>
 #include <stdint.h>
+#include <math.h>
+#include <string.h> // for memset
+
+typedef union {
+    double d;
+    uint64_t u;
+} DoubleBits;
 
 floatx doubleToFloatx(double val, int totBits, int expBits) {
-    assert(totBits >= 3 && totBits <= 64);
-    assert(expBits >= 1 && expBits <= totBits - 2);
+    if (val == 0.0) return 0; // Handle zero immediately
 
-    int fracBits = totBits - expBits - 1;
-    floatx fx = 0;
+    int fracBits = totBits - 1 - expBits;        // fraction field bits
+    int doubleExpBits = 11;                      // double has 11 exponent bits
+    int doubleFracBits = 52;                     // double has 52 fraction bits
+    int64_t doubleBias = (1 << (doubleExpBits - 1)) - 1;
 
-    // Handle sign
-    if (val < 0.0) {
-        setBit(totBits - 1, 1, &fx);
-        val = -val;
+    int64_t bias = (1 << (expBits - 1)) - 1;    // floatx bias
+
+    DoubleBits db;
+    db.d = val;
+
+    // Extract double fields
+    uint64_t sign = (db.u >> 63) & 0x1;
+    uint64_t exp  = (db.u >> doubleFracBits) & 0x7ff;
+    uint64_t frac = db.u & 0xfffffffffffff;
+
+    floatx result = 0;
+
+    // Handle special cases
+    if (exp == 0x7ff) { // NaN or infinity
+        uint64_t f = (frac != 0) ? 1 : 0;
+        result = ((uint64_t)sign << (totBits - 1)) |
+                 (((1ULL << expBits) - 1) << fracBits) |
+                 (f ? (1ULL << (fracBits - 1)) : 0);
+        return result;
     }
 
-    // Handle zero
-    if (val == 0.0) return fx;
+    if (exp == 0 && frac == 0) { // exact zero
+        return (floatx)sign << (totBits - 1);
+    }
 
-    // Constants for bias
-    int bias = (1 << (expBits - 1)) - 1;
-    int doubleBias = 1023;
+    // Compute true exponent of double
+    int64_t trueExp;
+    uint64_t mantissa;
 
-    // Extract double bits
-    union {
-        double d;
-        uint64_t u;
-    } uval;
-    uval.d = val;
+    if (exp == 0) { // subnormal double
+        trueExp = 1 - doubleBias;
+        mantissa = frac;
+    } else { // normal double
+        trueExp = exp - doubleBias;
+        mantissa = (1ULL << doubleFracBits) | frac; // add implicit 1
+    }
 
-    int64_t doubleExp = ((uval.u >> 52) & 0x7FF) - doubleBias;
-    uint64_t doubleFrac = uval.u & 0xFFFFFFFFFFFFFULL; // 52 bits
+    // Adjust exponent to floatx bias
+    int64_t fxExp = trueExp + bias;
 
-    long long fxExp = 0;
-    uint64_t fxFrac = 0;
-
-    if (doubleExp == 1024) { // Infinity or NaN in double
-        fxExp = (1 << expBits) - 1;
-        fxFrac = (doubleFrac != 0) ? 1 : 0;
-    } else if (doubleExp <= -bias) { // subnormal in floatx
-        // shift fraction to fit into fracBits
-        double shift = doubleExp + 1 + fracBits;
-        if (shift >= 0)
-            fxFrac = (uint64_t)((1.0 + (doubleFrac / pow(2.0,52))) * pow(2.0, shift) + 0.5);
-        fxExp = 0;
-    } else { // normal
-        fxExp = doubleExp + bias;
-        // shift fraction to fit fracBits
-        fxFrac = (uint64_t)((1.0 + (doubleFrac / pow(2.0,52))) * (1ULL << fracBits) - (1ULL << fracBits) + 0.5);
-        if (fxFrac == (1ULL << fracBits)) { // rounding overflow
-            fxFrac = 0;
-            fxExp += 1;
-            if (fxExp >= (1 << expBits) - 1) { // infinity
-                fxExp = (1 << expBits) - 1;
-                fxFrac = 0;
-            }
+    if (fxExp >= (1LL << expBits) - 1) { // overflow → infinity
+        result = ((uint64_t)sign << (totBits - 1)) |
+                 (((1ULL << expBits) - 1) << fracBits);
+        return result;
+    } else if (fxExp <= 0) { // subnormal floatx
+        if (fxExp < -((int64_t)fracBits)) { // too small → zero
+            return (floatx)sign << (totBits - 1);
         }
+        // shift mantissa to make subnormal
+        mantissa = mantissa >> (1 - fxExp);
+        fxExp = 0;
     }
 
-    // Write exponent and fraction
-    setBitFld(fracBits, expBits, fxExp, &fx);
-    setBitFld(0, fracBits, fxFrac, &fx);
+    // Truncate or extend fraction to fit floatx
+    uint64_t fxFrac;
+    if (fracBits >= doubleFracBits + 1) { // extend with 0s
+        fxFrac = mantissa << (fracBits - (doubleFracBits + 1));
+    } else { // truncate
+        fxFrac = mantissa >> ((doubleFracBits + 1) - fracBits);
+    }
 
-    return fx;
+    // Mask fraction to correct width
+    fxFrac &= ((1ULL << fracBits) - 1);
+
+    // Assemble floatx
+    result = ((uint64_t)sign << (totBits - 1)) |
+             ((uint64_t)fxExp << fracBits) |
+             fxFrac;
+
+    return result;
 }
