@@ -21,6 +21,11 @@ floatx doubleToFloatx(double val,int totBits,int expBits) {
 
     conv.d = val;
 
+    // ✅ Identity case (IEEE double)
+    if (totBits == 64 && expBits == 11) {
+        return conv.u;
+    }
+
     unsigned long sign = (conv.u >> 63) & 1;
     unsigned long exp  = (conv.u >> 52) & 0x7FF;
     unsigned long frac = conv.u & 0xFFFFFFFFFFFFF;
@@ -48,12 +53,10 @@ floatx doubleToFloatx(double val,int totBits,int expBits) {
     // Normalize exponent
     // -----------------------------
     int unbiasedExp;
-    int isNormal = 1;
 
     if (exp == 0) {
         // subnormal double
         unbiasedExp = 1 - doubleBias;
-        isNormal = 0;
     } else {
         unbiasedExp = exp - doubleBias;
         frac |= (1UL << 52);  // restore implicit 1
@@ -98,7 +101,7 @@ floatx doubleToFloatx(double val,int totBits,int expBits) {
     // Normal case
     // -----------------------------
 
-    // ✅ remove implicit leading 1 before storing
+    // remove implicit leading 1
     unsigned long mantissa = frac & ((1UL << 52) - 1);
 
     unsigned long fxFrac;
