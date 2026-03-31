@@ -1,118 +1,98 @@
 #include "floatx.h"
-#include <assert.h>
-#include <limits.h>
-#include <math.h>
 #include "bitFields.h"
+#include <math.h>
+#include <limits.h>  // for CHAR_BIT
+#include <assert.h>
 
-floatx doubleToFloatx(double val,int totBits,int expBits) {
-
+floatx doubleToFloatx(double val, int totBits, int expBits) {
     assert(totBits >= 3 && totBits <= 64);
     assert(expBits >= 1 && expBits <= totBits - 2);
 
-    int fracBits = totBits - expBits - 1;
+    int fracBits = totBits - expBits - 1;  // number of fraction bits
+    unsigned long result = 0;
 
-    int doubleBias = 1023;
-    int floatxBias = (1 << (expBits - 1)) - 1;
+    // Handle special cases first
+    if (isnan(val)) {
+        // NaN: exponent all 1s, fraction != 0
+        setBits(&result, fracBits + expBits, totBits - 1, 1); // exponent all 1s
+        setBits(&result, 1, 0, fracBits - 1);                 // fraction != 0 (set LSB)
+        return result;
+    }
 
+    if (isinf(val)) {
+        // Infinity: exponent all 1s, fraction 0
+        if (val < 0) result |= 1UL << (totBits - 1);         // sign
+        setBits(&result, (1UL << expBits) - 1, fracBits + expBits, totBits - 2);
+        return result;
+    }
+
+    if (val == 0.0) {
+        // Zero: all bits 0 except sign if negative
+        if (signbit(val)) result |= 1UL << (totBits - 1);
+        return result;
+    }
+
+    // Extract sign
+    if (val < 0) {
+        result |= 1UL << (totBits - 1);
+        val = -val;
+    }
+
+    // Decompose double
     union {
         double d;
-        unsigned long u;
-    } conv;
+        unsigned long long u;
+    } dbl;
+    dbl.d = val;
 
-    conv.d = val;
+    int dblExp = (int)((dbl.u >> 52) & 0x7FF) - 1023;  // unbiased double exponent
+    unsigned long long dblFrac = dbl.u & 0xFFFFFFFFFFFFFULL; // 52-bit fraction
 
-    // ✅ Identity case (IEEE double)
-    if (totBits == 64 && expBits == 11) {
-        return conv.u;
-    }
+    // Determine floatx bias
+    int fxBias = (1 << (expBits - 1)) - 1;
+    int fxExp = dblExp + fxBias;
 
-    unsigned long sign = (conv.u >> 63) & 1;
-    unsigned long exp  = (conv.u >> 52) & 0x7FF;
-    unsigned long frac = conv.u & 0xFFFFFFFFFFFFF;
+    // Determine max/min exponent for floatx
+    int maxExp = (1 << expBits) - 2;   // all 1s reserved for Inf/NaN
+    int minExp = 1;
 
-    // -----------------------------
-    // Zero
-    // -----------------------------
-    if (exp == 0 && frac == 0) {
-        return sign << (totBits - 1);
-    }
+    unsigned long fxFraction = 0;
 
-    // -----------------------------
-    // Inf / NaN
-    // -----------------------------
-    if (exp == 0x7FF) {
-        unsigned long fxExp = (1UL << expBits) - 1;
-        unsigned long fxFrac = (frac == 0) ? 0 : 1;
-
-        return (sign << (totBits - 1)) |
-               (fxExp << fracBits) |
-               fxFrac;
-    }
-
-    // -----------------------------
-    // Normalize exponent
-    // -----------------------------
-    int unbiasedExp;
-
-    if (exp == 0) {
-        // subnormal double
-        unbiasedExp = 1 - doubleBias;
-    } else {
-        unbiasedExp = exp - doubleBias;
-        frac |= (1UL << 52);  // restore implicit 1
-    }
-
-    int fxExp = unbiasedExp + floatxBias;
-    int maxExp = (1 << expBits) - 1;
-
-    // -----------------------------
-    // Overflow → infinity
-    // -----------------------------
-    if (fxExp >= maxExp) {
-        return (sign << (totBits - 1)) |
-               ((unsigned long)maxExp << fracBits);
-    }
-
-    // -----------------------------
-    // Underflow → subnormal
-    // -----------------------------
-    if (fxExp <= 0) {
-
-        int shift = 1 - fxExp;
-
-        if (shift > 53) {
-            return sign << (totBits - 1);
-        }
-
-        frac >>= shift;
-
-        unsigned long fxFrac;
-
-        if (52 >= fracBits) {
-            fxFrac = frac >> (52 - fracBits);
+    // Handle normal floatx
+    if (fxExp >= minExp && fxExp <= maxExp) {
+        // Normalized: leading 1 implied
+        // Map double fraction to floatx fraction
+        // Shift double fraction to align with floatx fraction
+        int shift = 52 - fracBits;
+        if (shift >= 0) {
+            fxFraction = (unsigned long)(dblFrac >> shift);
         } else {
-            fxFrac = frac << (fracBits - 52);
+            fxFraction = (unsigned long)(dblFrac << (-shift));
         }
 
-        return (sign << (totBits - 1)) | fxFrac;
+        // Set exponent and fraction
+        setBits(&result, fxExp, fracBits + expBits, totBits - 2);
+        setBits(&result, fxFraction, 0, fracBits - 1);
+        return result;
     }
 
-    // -----------------------------
-    // Normal case
-    // -----------------------------
-
-    // remove implicit leading 1
-    unsigned long mantissa = frac & ((1UL << 52) - 1);
-
-    unsigned long fxFrac;
-
-    if (52 >= fracBits) {
-        fxFrac = mantissa >> (52 - fracBits);
-    } else {
-        fxFrac = mantissa << (fracBits - 52);
+    // Handle subnormal floatx
+    if (fxExp < minExp && fxExp > -fracBits) {
+        // Shift fraction to produce subnormal
+        int shift = (minExp - fxExp);
+        fxFraction = ((1ULL << 52) | dblFrac) >> (52 - fracBits + shift);
+        setBits(&result, 0, fracBits + expBits, totBits - 2); // exponent all 0
+        setBits(&result, fxFraction, 0, fracBits - 1);
+        return result;
     }
 
-    return (sign << (totBits - 1)) |
-           ((unsigned long)fxExp << fracBits) |
-           fxFrac;
+    // Handle overflow (too large): set to infinity
+    if (fxExp > maxExp) {
+        setBits(&result, (1UL << expBits) - 1, fracBits + expBits, totBits - 2); // exponent all 1s
+        setBits(&result, 0, 0, fracBits - 1);                                     // fraction 0
+        return result;
+    }
+
+    // Handle underflow (too small): set to zero
+    return result; // already 0 with correct sign
 }
