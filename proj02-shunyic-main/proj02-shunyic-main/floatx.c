@@ -1,7 +1,6 @@
 #include "floatx.h"
 #include "bitFields.h"
 #include <math.h>
-#include <limits.h>
 #include <assert.h>
 #include <stdint.h>
 
@@ -20,48 +19,41 @@ floatx doubleToFloatx(double val, int totBits, int expBits) {
 
     // Handle special cases
     if (isnan(val)) {
-        // All exponent 1s, fraction nonzero (we use 1)
         setBitFld(fracBits, expBits, (1UL << expBits) - 1, &result); // exponent all 1s
-        setBit(result, 0, &result); // any nonzero fraction
-        setBitFld(0, fracBits, 1, &result); // fraction=1
+        setBitFld(0, fracBits, 1, &result);                           // fraction nonzero
         return result;
     }
-
     if (isinf(val)) {
-        // All exponent 1s, fraction 0
         setBitFld(fracBits, expBits, (1UL << expBits) - 1, &result); // exponent all 1s
-        setBitFld(0, fracBits, 0, &result);
+        setBitFld(0, fracBits, 0, &result);                           // fraction zero
         return result;
     }
-
-    if (val == 0.0) {
-        // zero
-        return 0;
-    }
+    if (val == 0.0) return 0;
 
     // Normalized value
     int dblExp;
     double frac = frexp(val, &dblExp); // val = frac * 2^dblExp, 0.5 <= frac < 1
-    int bias64 = 1023;  // double exponent bias
     int biasFx = (1 << (expBits - 1)) - 1;
     long fxExp = dblExp - 1 + biasFx;
 
     if (fxExp >= (1 << expBits) - 1) {
         // Overflow -> infinity
-        setBitFld(fracBits, expBits, (1UL << expBits) - 1, &result); // exponent all 1s
-        setBitFld(0, fracBits, 0, &result);                           // fraction=0
+        setBitFld(fracBits, expBits, (1UL << expBits) - 1, &result);
+        setBitFld(0, fracBits, 0, &result);
         return result;
     } else if (fxExp <= 0) {
-        // Subnormal number
+        // Subnormal
         frac = ldexp(frac, fxExp); // shift into fraction
-        unsigned long fracVal = (unsigned long)(frac * (1UL << fracBits) + 0.5);
+        unsigned long fracVal = (unsigned long)(frac * (1UL << fracBits));
+        if (fracVal > (1UL << fracBits) - 1) fracVal = (1UL << fracBits) - 1;
         setBitFld(0, fracBits, fracVal, &result);
         setBitFld(fracBits, expBits, 0, &result);
         return result;
     }
 
     // Normal floatx
-    unsigned long fracVal = (unsigned long)((frac - 0.5) * 2 * (1UL << fracBits) + 0.5);
+    unsigned long fracVal = (unsigned long)((frac - 0.5) * 2 * (1UL << fracBits));
+    if (fracVal > (1UL << fracBits) - 1) fracVal = (1UL << fracBits) - 1;
     setBitFld(0, fracBits, fracVal, &result);
     setBitFld(fracBits, expBits, fxExp, &result);
 
