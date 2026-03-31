@@ -2,56 +2,67 @@
 #include "bitFields.h"
 #include <math.h>
 #include <assert.h>
-
-typedef unsigned long floatx;
+#include <stdint.h>
 
 floatx doubleToFloatx(double val, int totBits, int expBits) {
     assert(totBits >= 3 && totBits <= 64);
     assert(expBits >= 1 && expBits <= totBits - 2);
 
     int fracBits = totBits - expBits - 1;
-    floatx result = 0;
+    floatx fx = 0;
 
-    // Sign
+    // Handle sign
     if (val < 0.0) {
-        setBit(totBits - 1, 1, &result);
+        setBit(totBits - 1, 1, &fx);
         val = -val;
     }
 
-    // Zero
-    if (val == 0.0) return result;
+    // Handle zero
+    if (val == 0.0) return fx;
 
-    // Decompose val
-    int e;
-    double frac = frexp(val, &e); // val = frac * 2^e, 0.5 <= frac < 1.0
-
+    // Constants for bias
     int bias = (1 << (expBits - 1)) - 1;
-    long exp = e - 1 + bias;
+    int doubleBias = 1023;
 
-    unsigned long fracInt;
+    // Extract double bits
+    union {
+        double d;
+        uint64_t u;
+    } uval;
+    uval.d = val;
 
-    if (exp <= 0) { // subnormal
-        frac = ldexp(frac, e - 1 + fracBits);
-        fracInt = (unsigned long)(frac + 0.5); // round to nearest
-        exp = 0;
-    } else if (exp >= (1 << expBits) - 1) { // overflow, clamp
-        exp = (1 << expBits) - 1;
-        fracInt = 0;
+    int64_t doubleExp = ((uval.u >> 52) & 0x7FF) - doubleBias;
+    uint64_t doubleFrac = uval.u & 0xFFFFFFFFFFFFFULL; // 52 bits
+
+    long long fxExp = 0;
+    uint64_t fxFrac = 0;
+
+    if (doubleExp == 1024) { // Infinity or NaN in double
+        fxExp = (1 << expBits) - 1;
+        fxFrac = (doubleFrac != 0) ? 1 : 0;
+    } else if (doubleExp <= -bias) { // subnormal in floatx
+        // shift fraction to fit into fracBits
+        double shift = doubleExp + 1 + fracBits;
+        if (shift >= 0)
+            fxFrac = (uint64_t)((1.0 + (doubleFrac / pow(2.0,52))) * pow(2.0, shift) + 0.5);
+        fxExp = 0;
     } else { // normal
-        frac = ldexp(frac - 0.5, fracBits + 1); // remove implicit 1
-        fracInt = (unsigned long)(frac + 0.5); // round to nearest
-        if (fracInt >= (1UL << fracBits)) { // handle carry
-            fracInt = 0;
-            exp += 1;
-            if (exp >= (1 << expBits) - 1) { // max
-                exp = (1 << expBits) - 1;
+        fxExp = doubleExp + bias;
+        // shift fraction to fit fracBits
+        fxFrac = (uint64_t)((1.0 + (doubleFrac / pow(2.0,52))) * (1ULL << fracBits) - (1ULL << fracBits) + 0.5);
+        if (fxFrac == (1ULL << fracBits)) { // rounding overflow
+            fxFrac = 0;
+            fxExp += 1;
+            if (fxExp >= (1 << expBits) - 1) { // infinity
+                fxExp = (1 << expBits) - 1;
+                fxFrac = 0;
             }
         }
     }
 
-    // Set exponent and fraction
-    setBitFld(fracBits, expBits, exp, &result);
-    setBitFld(0, fracBits, fracInt, &result);
+    // Write exponent and fraction
+    setBitFld(fracBits, expBits, fxExp, &fx);
+    setBitFld(0, fracBits, fxFrac, &fx);
 
-    return result;
+    return fx;
 }
