@@ -48,13 +48,15 @@ floatx doubleToFloatx(double val,int totBits,int expBits) {
     // Normalize exponent
     // -----------------------------
     int unbiasedExp;
+    int isNormal = 1;
 
     if (exp == 0) {
         // subnormal double
         unbiasedExp = 1 - doubleBias;
+        isNormal = 0;
     } else {
         unbiasedExp = exp - doubleBias;
-        frac |= (1UL << 52);  // implicit 1
+        frac |= (1UL << 52);  // restore implicit 1
     }
 
     int fxExp = unbiasedExp + floatxBias;
@@ -63,7 +65,7 @@ floatx doubleToFloatx(double val,int totBits,int expBits) {
     // -----------------------------
     // Overflow → infinity
     // -----------------------------
-    if (fxExp > maxExp - 1) {
+    if (fxExp >= maxExp) {
         return (sign << (totBits - 1)) |
                ((unsigned long)maxExp << fracBits);
     }
@@ -95,12 +97,16 @@ floatx doubleToFloatx(double val,int totBits,int expBits) {
     // -----------------------------
     // Normal case
     // -----------------------------
+
+    // ✅ remove implicit leading 1 before storing
+    unsigned long mantissa = frac & ((1UL << 52) - 1);
+
     unsigned long fxFrac;
 
     if (52 >= fracBits) {
-        fxFrac = frac >> (52 - fracBits);
+        fxFrac = mantissa >> (52 - fracBits);
     } else {
-        fxFrac = frac << (fracBits - 52);
+        fxFrac = mantissa << (fracBits - 52);
     }
 
     return (sign << (totBits - 1)) |
