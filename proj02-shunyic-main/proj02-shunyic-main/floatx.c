@@ -49,7 +49,7 @@ floatx doubleToFloatx(double val, int totBits, int expBits) {
 
     if (newExp <= 0) {
         // subnormal floatx
-        frac |= BIT(52); // restore implicit 1
+        frac |= (1ULL << 52); // restore implicit 1
 
         if (newExp < -fracBits) {
             // underflow → zero
