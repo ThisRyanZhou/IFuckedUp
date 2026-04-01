@@ -1,73 +1,90 @@
 #include "floatx.h"
-#include <assert.h>
-#include <limits.h>
 #include <math.h>
-#include "bitFields.h"
+#include <stdint.h>
+
 
 floatx doubleToFloatx(double val, int totBits, int expBits) {
-    assert(totBits > 1);
-    assert(expBits > 0 && expBits < totBits);
-
-    if (val == 0.0) return 0;
-
-    union {
-        double d;
-        unsigned long u;
-    } uVal;
-    uVal.d = val;
+    if (totBits < 3 || expBits < 1 || expBits > totBits-2) return 0;
 
     int fracBits = totBits - 1 - expBits;
+    uint64_t fx = 0;
 
-    // Extract fields using bitFields helpers
-    int sign = getBitFld(63, 1, uVal.u);
-    int exp  = getBitFld(52, 11, uVal.u);
-    unsigned long frac = getBitFld(0, 52, uVal.u);
+    // Handle special cases
+    if (isnan(val)) return 1ULL << (fracBits);          // any NaN pattern
+    if (isinf(val)) return ((val < 0) ? (1ULL << (totBits-1)) : 0) | (((1ULL << expBits)-1) << fracBits);
+    if (val == 0.0) return 0;
 
-    int doubleBias = 1023;
-    int floatxBias = (1 << (expBits - 1)) - 1;
+    // Determine sign
+    uint64_t sign = (val < 0) ? 1ULL : 0ULL;
+    if (val < 0) val = -val;
 
-    floatx result = 0;
+    // Extract double bits
+    union {
+        double d;
+        uint64_t u;
+    } u = { val };
 
-    // Set sign
-    setBitFld(totBits - 1, 1, sign, &result);
 
-    if (exp == 0) {
-        // subnormal double
-        unsigned long fxFrac = frac >> (52 - fracBits);
-        setBitFld(0, fracBits, fxFrac, &result);
-        return result;
+    uint64_t doubleExp = (u.u >> 52) & 0x7FF;
+    uint64_t doubleFrac = u.u & 0xFFFFFFFFFFFFF;
+
+
+    int64_t doubleBias = 1023;
+    int64_t fxBias = (1 << (expBits-1)) - 1;
+
+    int64_t exp;
+    uint64_t frac;
+
+    if (doubleExp == 0) {
+        // subnormal in double
+        exp = 0;
+        frac = doubleFrac;
+    } else {
+        // normal number: add implicit 1
+        frac = (1ULL << 52) | doubleFrac;
+        exp = (int64_t)doubleExp - doubleBias + fxBias;
     }
 
-    int trueExp = exp - doubleBias;
-    int newExp  = trueExp + floatxBias;
-
-    if (newExp >= (1 << expBits) - 1) {
-        // overflow → infinity
-        setBitFld(fracBits, expBits, (1 << expBits) - 1, &result);
-        return result;
+    // Handle overflow/underflow
+    if (exp >= (1 << expBits) - 1) {
+        // infinity
+        exp = (1 << expBits) - 1;
+        frac = 0;
+    } else if (exp <= 0) {
+        // subnormal in floatx
+        if (exp < -fracBits) {
+            // too small → zero
+            exp = 0;
+            frac = 0;
+        } else {
+            // shift fraction right to create subnormal
+            frac = frac >> (1 - exp);
+            exp = 0;
     }
 
-    if (newExp <= 0) {
-        // subnormal floatx
-        frac |= (1ULL << 52); // restore implicit 1
 
-        if (newExp < -fracBits) {
-            // underflow → zero
-            return result;
-        }
 
-        unsigned long fxFrac =
-            frac >> (52 + 1 - fracBits - newExp);
 
-        setBitFld(0, fracBits, fxFrac, &result);
-        return result;
+
+
+
+
+
+
     }
 
-    // normal case
-    setBitFld(fracBits, expBits, newExp, &result);
+    // Truncate or extend fraction to fit fracBits
+    if (fracBits < 52 + 1) {
+        int shift = (52 + 1) - fracBits;
+        frac = frac >> shift;
+    } else if (fracBits > 52 + 1) {
+        frac = frac << (fracBits - (52 + 1));
 
-    unsigned long fxFrac = frac >> (52 - fracBits);
-    setBitFld(0, fracBits, fxFrac, &result);
+    }
 
-    return result;
+    // Compose floatx
+    fx = (sign << (totBits-1)) | (exp << fracBits) | (frac & ((1ULL << fracBits)-1));
+    return fx;
+
+
 }
